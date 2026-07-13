@@ -72,6 +72,23 @@ jobs:
           echo "KV_NAME=kv-${SLUG:0:18}${SHORT_SUFFIX}" >> $GITHUB_ENV
           echo "APPI_NAME=appi-${SLUG}" >> $GITHUB_ENV
 
+      - name: Validate runtime stack
+        run: |
+          # Confirmed via 'az webapp list-runtimes --os-type windows':
+          # valid Windows stack strings are lowercase "dotnet:X" (colon, no
+          # pipe, no "CORE" suffix). ASPNET:V4.8/V3.5 (classic Framework),
+          # NODE, JAVA, and TOMCAT are also valid on Windows but excluded
+          # here to keep this form Core-only. Keep in sync with the Port
+          # form's runtime_stack dropdown options.
+          ALLOWED_STACKS="dotnet:8 dotnet:9 dotnet:10"
+          INPUT_STACK="${{ inputs.runtime_stack }}"
+
+          if [[ ! " $ALLOWED_STACKS " =~ " $INPUT_STACK " ]]; then
+            echo "::error::Unsupported runtime_stack '$INPUT_STACK'. Allowed values for this Windows App Service plan: $ALLOWED_STACKS"
+            echo "Run 'az webapp list-runtimes --os-type windows' to see the full current list if this needs to change, then update both this allow-list and the Port form's dropdown options to match."
+            exit 1
+          fi
+
       - name: Log - starting
         uses: port-labs/port-github-action@v1
         with:
@@ -231,12 +248,15 @@ jobs:
           # Generates Program.cs, a WeatherForecast sample controller,
           # appsettings.json, launchSettings.json, and the .csproj - the
           # standard shape Visual Studio expects to open and run as-is.
-          dotnet new webapi -n "${{ inputs.service_name }}" --use-controllers true
+          # -o is explicit here (not just -n) so the project always lands
+          # at a known path; without it, "dotnet new sln -n X" can also
+          # try to nest itself under ./X, colliding with the project folder.
+          dotnet new webapi -n "${{ inputs.service_name }}" -o "${{ inputs.service_name }}" --use-controllers true
 
-          dotnet new sln -n "${{ inputs.service_name }}"
+          dotnet new sln -n "${{ inputs.service_name }}" -o .
           dotnet sln "${{ inputs.service_name }}.sln" add "${{ inputs.service_name }}/${{ inputs.service_name }}.csproj"
 
-          dotnet new gitignore
+          dotnet new gitignore -o .
 
       - name: Wire Azure resource settings into appsettings.json
         run: |
@@ -295,8 +315,8 @@ jobs:
             {
               "url": "https://github.com/${{ env.ORG_NAME }}/${{ inputs.service_name }}",
               "runtimeStack": "${{ inputs.runtime_stack }}"
-            }      
-
+            }
+            
       - name: Log - finished
         if: always()
         uses: port-labs/port-github-action@v1
