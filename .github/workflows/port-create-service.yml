@@ -149,7 +149,8 @@ jobs:
           az keyvault create \
             --name "${{ env.KV_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --location "${{ env.AZURE_LOCATION }}"
+            --location "${{ env.AZURE_LOCATION }}" \
+            --enable-rbac-authorization true
 
           # Grant the Web App's system-assigned identity access to the vault
           az webapp identity assign \
@@ -161,10 +162,19 @@ jobs:
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --query principalId -o tsv)
 
-          az keyvault set-policy \
+          KV_ID=$(az keyvault show \
             --name "${{ env.KV_NAME }}" \
-            --object-id "$WEBAPP_PRINCIPAL_ID" \
-            --secret-permissions get list
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query id -o tsv)
+
+          # RBAC replaces vault access policies on new vaults - grant the
+          # built-in "Key Vault Secrets User" role (read-only secret access)
+          # rather than az keyvault set-policy, which fails on RBAC vaults.
+          az role assignment create \
+            --role "Key Vault Secrets User" \
+            --assignee-object-id "$WEBAPP_PRINCIPAL_ID" \
+            --assignee-principal-type ServicePrincipal \
+            --scope "$KV_ID"
 
           az webapp config appsettings set \
             --name "${{ env.WEBAPP_NAME }}" \
