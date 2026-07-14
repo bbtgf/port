@@ -1,0 +1,447 @@
+name: Scaffold a new .NET API service
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_name:
+        required: true
+        description: The name of the new service
+        type: string
+      description:
+        required: false
+        description: Description of the service
+        type: string
+      runtime_stack:
+        required: true
+        description: Runtime stack for the Web App (Windows stack, e.g. "ASPNET|V4.8")
+        type: string
+      storage_account:
+        required: false
+        description: Provision a Storage Account for this service
+        type: boolean
+        default: false
+      key_vault:
+        required: false
+        description: Provision a Key Vault for this service
+        type: boolean
+        default: false
+      application_insight:
+        required: false
+        description: Provision an Application Insights resource for this service
+        type: boolean
+        default: false
+      port_context:
+        required: true
+        description: Includes the action's run id
+        type: string
+
+permissions:
+  id-token: write   # required for Azure OIDC login
+  contents: read
+
+env:
+  ORG_NAME: bbtgf
+  AZURE_LOCATION: australiaeast
+  # Azure resource names must be lowercase / alphanumeric-safe, so we
+  # derive one sanitized slug up front and reuse it everywhere below.
+
+jobs:
+  scaffold-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract runId from port_context
+        run: |
+          echo "PORT_RUN_ID=$(echo '${{ inputs.port_context }}' | jq -r .runId)" >> $GITHUB_ENV
+
+      - name: Compute sanitized resource names
+        run: |
+          RAW="${{ inputs.service_name }}"
+          # lowercase, strip anything that isn't a-z0-9
+          SLUG=$(echo "$RAW" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+          SHORT_SUFFIX=$(echo "${{ env.PORT_RUN_ID }}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | tail -c 6)
+
+          echo "SLUG=$SLUG" >> $GITHUB_ENV
+          echo "RESOURCE_GROUP=rg-${SLUG}" >> $GITHUB_ENV
+          echo "APP_PLAN_NAME=plan-${SLUG}" >> $GITHUB_ENV
+          echo "WEBAPP_NAME=app-${SLUG}" >> $GITHUB_ENV
+          # storage account names must be <= 24 chars, lowercase alnum only
+          echo "STORAGE_NAME=st${SLUG:0:16}${SHORT_SUFFIX}" >> $GITHUB_ENV
+          # key vault names must be <= 24 chars
+          echo "KV_NAME=kv-${SLUG:0:18}${SHORT_SUFFIX}" >> $GITHUB_ENV
+          echo "APPI_NAME=appi-${SLUG}" >> $GITHUB_ENV
+
+      - name: Validate runtime stack
+        run: |
+          # Confirmed via 'az webapp list-runtimes --os-type windows':
+          # valid Windows stack strings are lowercase "dotnet:X" (colon, no
+          # pipe, no "CORE" suffix). ASPNET:V4.8/V3.5 (classic Framework),
+          # NODE, JAVA, and TOMCAT are also valid on Windows but excluded
+          # here to keep this form Core-only. Keep in sync with the Port
+          # form's runtime_stack dropdown options.
+          ALLOWED_STACKS="dotnet:8 dotnet:9 dotnet:10"
+          INPUT_STACK="${{ inputs.runtime_stack }}"
+
+          if [[ ! " $ALLOWED_STACKS " =~ " $INPUT_STACK " ]]; then
+            echo "::error::Unsupported runtime_stack '$INPUT_STACK'. Allowed values for this Windows App Service plan: $ALLOWED_STACKS"
+            echo "Run 'az webapp list-runtimes --os-type windows' to see the full current list if this needs to change, then update both this allow-list and the Port form's dropdown options to match."
+            exit 1
+          fi
+
+          # e.g. "dotnet:9" -> DOTNET_MAJOR=9. Used below so the SDK that
+          # scaffolds the project (setup-dotnet + global.json) always matches
+          # the runtime actually selected for the Azure Web App, instead of
+          # a version pinned separately that could silently drift apart.
+          DOTNET_MAJOR="${INPUT_STACK#dotnet:}"
+          echo "DOTNET_MAJOR=${DOTNET_MAJOR}" >> $GITHUB_ENV
+          echo "DOTNET_SDK_VERSION=${DOTNET_MAJOR}.0.x" >> $GITHUB_ENV
+
+      - name: Log - starting
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Starting scaffolding of service, repository and Azure resources: ${{ inputs.service_name }}"
+
+      # ---------------------------------------------------------------
+      # Azure login (OIDC federated credential - no client secret needed)
+      # ---------------------------------------------------------------
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create Resource Group
+        run: |
+          az group create \
+            --name "${{ env.RESOURCE_GROUP }}" \
+            --location "${{ env.AZURE_LOCATION }}" \
+            --tags service="${{ inputs.service_name }}"
+
+      - name: Log - resource group created
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created resource group ${{ env.RESOURCE_GROUP }} in ${{ env.AZURE_LOCATION }}"
+
+      - name: Create App Service Plan + .NET Web App
+        run: |
+          # Publish=Code, Region=Australia East, Pricing=Free F1 (Windows) are
+          # fixed defaults per the form - only name/runtime come from Port.
+          az appservice plan create \
+            --name "${{ env.APP_PLAN_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --location "${{ env.AZURE_LOCATION }}" \
+            --sku F1
+
+          az webapp create \
+            --name "${{ env.WEBAPP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --plan "${{ env.APP_PLAN_NAME }}" \
+            --runtime "${{ inputs.runtime_stack }}"
+
+          echo "WEBAPP_URL=https://${{ env.WEBAPP_NAME }}.azurewebsites.net" >> $GITHUB_ENV
+
+      - name: Log - web app created
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created App Service Plan (F1) and Web App ${{ env.WEBAPP_NAME }} running ${{ inputs.runtime_stack }}"
+
+      # ---------------------------------------------------------------
+      # Optional: Storage Account
+      # ---------------------------------------------------------------
+      - name: Create Storage Account
+        if: ${{ inputs.storage_account == true }}
+        run: |
+          az storage account create \
+            --name "${{ env.STORAGE_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --location "${{ env.AZURE_LOCATION }}" \
+            --sku Standard_LRS \
+            --kind StorageV2
+
+          STORAGE_CONN=$(az storage account show-connection-string \
+            --name "${{ env.STORAGE_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query connectionString -o tsv)
+
+          az webapp config appsettings set \
+            --name "${{ env.WEBAPP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --settings AZURE_STORAGE_CONNECTION_STRING="$STORAGE_CONN"
+
+      - name: Log - storage account created
+        if: ${{ inputs.storage_account == true }}
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created storage account ${{ env.STORAGE_NAME }} and wired its connection string into the web app"
+
+      # ---------------------------------------------------------------
+      # Optional: Key Vault
+      # ---------------------------------------------------------------
+      - name: Create Key Vault
+        if: ${{ inputs.key_vault == true }}
+        run: |
+          az keyvault create \
+            --name "${{ env.KV_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --location "${{ env.AZURE_LOCATION }}" \
+            --enable-rbac-authorization true
+
+          # Grant the Web App's system-assigned identity access to the vault
+          az webapp identity assign \
+            --name "${{ env.WEBAPP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}"
+
+          WEBAPP_PRINCIPAL_ID=$(az webapp identity show \
+            --name "${{ env.WEBAPP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query principalId -o tsv)
+
+          KV_ID=$(az keyvault show \
+            --name "${{ env.KV_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query id -o tsv)
+
+          # RBAC replaces vault access policies on new vaults - grant the
+          # built-in "Key Vault Secrets User" role (read-only secret access)
+          # rather than az keyvault set-policy, which fails on RBAC vaults.
+          az role assignment create \
+            --role "Key Vault Secrets User" \
+            --assignee-object-id "$WEBAPP_PRINCIPAL_ID" \
+            --assignee-principal-type ServicePrincipal \
+            --scope "$KV_ID"
+
+          az webapp config appsettings set \
+            --name "${{ env.WEBAPP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --settings KEY_VAULT_URI="https://${{ env.KV_NAME }}.vault.azure.net/"
+
+      - name: Log - key vault created
+        if: ${{ inputs.key_vault == true }}
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created key vault ${{ env.KV_NAME }} and granted the web app's managed identity Key Vault Secrets User access"
+
+      # ---------------------------------------------------------------
+      # Optional: Application Insights
+      # ---------------------------------------------------------------
+      - name: Create Application Insights
+        if: ${{ inputs.application_insight == true }}
+        run: |
+          az extension add --name application-insights --only-show-errors || true
+
+          az monitor app-insights component create \
+            --app "${{ env.APPI_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --location "${{ env.AZURE_LOCATION }}" \
+            --kind web \
+            --application-type web
+
+          APPI_CONN=$(az monitor app-insights component show \
+            --app "${{ env.APPI_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query connectionString -o tsv)
+
+          az webapp config appsettings set \
+            --name "${{ env.WEBAPP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --settings APPLICATIONINSIGHTS_CONNECTION_STRING="$APPI_CONN"
+
+      - name: Log - application insights created
+        if: ${{ inputs.application_insight == true }}
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created Application Insights ${{ env.APPI_NAME }} and wired its connection string into the web app"
+
+      # ---------------------------------------------------------------
+      # Repository scaffold - real ASP.NET Web API project + .sln so it
+      # opens directly in Visual Studio, no cookiecutter template.
+      # ---------------------------------------------------------------
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "${{ env.DOTNET_SDK_VERSION }}"
+
+      - name: Create GitHub Repository
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          gh repo create "${{ env.ORG_NAME }}/${{ inputs.service_name }}" \
+            --private \
+            --description "${{ inputs.description }}"
+
+      - name: Log - github repository created
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created GitHub repository ${{ env.ORG_NAME }}/${{ inputs.service_name }}"
+
+      - name: Scaffold ASP.NET Web API project
+        run: |
+          mkdir -p scaffold
+          cd scaffold
+
+          # Pin the SDK explicitly - ubuntu-latest ships multiple SDKs
+          # (8/9/10) preinstalled, and without this, "dotnet" can resolve to
+          # a newer one than setup-dotnet requested, changing template output
+          # behavior (e.g. .NET 10's dotnet new sln defaulting to .slnx).
+          cat > global.json <<'EOF'
+          {
+            "sdk": {
+              "version": "${{ env.DOTNET_MAJOR }}.0.100",
+              "rollForward": "latestFeature"
+            }
+          }
+          EOF
+
+          # Generates Program.cs, a WeatherForecast sample controller,
+          # appsettings.json, launchSettings.json, and the .csproj - the
+          # standard shape Visual Studio expects to open and run as-is.
+          # -o is explicit here (not just -n) so the project always lands
+          # at a known path; without it, "dotnet new sln -n X" can also
+          # try to nest itself under ./X, colliding with the project folder.
+          dotnet new webapi -n "${{ inputs.service_name }}" -o "${{ inputs.service_name }}" --use-controllers true
+
+          # --format sln is explicit here because .NET 10's "dotnet new sln"
+          # defaults to the newer .slnx format instead of classic .sln.
+          # ubuntu-latest runners ship multiple preinstalled SDKs (8/9/10)
+          # with no global.json pinning one, so "dotnet" can silently
+          # resolve to SDK 10 here even though setup-dotnet requested 8.0.x.
+          # .sln is what's needed for broad Visual Studio/tooling compatibility.
+          dotnet new sln -n "${{ inputs.service_name }}" -o . --format sln
+
+          # Known dotnet SDK quirk: even with -o explicitly set, "dotnet new
+          # sln -n X" can still nest the .sln under ./X/X.sln instead of
+          # honoring -o. Rather than trust the flag, locate whatever .sln
+          # actually got created and move it to the expected root path.
+          if [ ! -f "${{ inputs.service_name }}.sln" ]; then
+            FOUND_SLN=$(find . -maxdepth 2 -name "*.sln" -print -quit)
+            if [ -z "$FOUND_SLN" ]; then
+              echo "::error::dotnet new sln did not produce a .sln file anywhere under scaffold/"
+              exit 1
+            fi
+            mv "$FOUND_SLN" "./${{ inputs.service_name }}.sln"
+          fi
+
+          dotnet sln "${{ inputs.service_name }}.sln" add "${{ inputs.service_name }}/${{ inputs.service_name }}.csproj"
+
+          dotnet new gitignore -o .
+
+      - name: Log - project scaffolded
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Scaffolded ASP.NET Web API project and solution file (${{ inputs.runtime_stack }})"
+
+      - name: Wire Azure resource settings into appsettings.json
+        run: |
+          cd "scaffold/${{ inputs.service_name }}"
+          CONFIG_FILE="appsettings.json"
+
+          # Placeholders only - actual secret values are never written to the
+          # repo. Devs/CI pull real values from Key Vault or App Settings at
+          # runtime; these keys just document what's wired up per service.
+          python3 - "$CONFIG_FILE" <<'PY'
+          import json, sys, os
+
+          path = sys.argv[1]
+          with open(path) as f:
+              config = json.load(f)
+
+          if os.environ.get("STORAGE_ENABLED") == "true":
+              config["AzureStorage"] = {"ConnectionStringAppSetting": "AZURE_STORAGE_CONNECTION_STRING"}
+          if os.environ.get("KEYVAULT_ENABLED") == "true":
+              config["KeyVault"] = {"UriAppSetting": "KEY_VAULT_URI"}
+          if os.environ.get("APPINSIGHTS_ENABLED") == "true":
+              config["ApplicationInsights"] = {"ConnectionStringAppSetting": "APPLICATIONINSIGHTS_CONNECTION_STRING"}
+
+          with open(path, "w") as f:
+              json.dump(config, f, indent=2)
+          PY
+        env:
+          STORAGE_ENABLED: ${{ inputs.storage_account }}
+          KEYVAULT_ENABLED: ${{ inputs.key_vault }}
+          APPINSIGHTS_ENABLED: ${{ inputs.application_insight }}
+
+      - name: Log - appsettings wired
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Wired appsettings.json placeholders for the provisioned Azure resources"
+
+      - name: Push scaffold to new repository
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          cd scaffold
+          git init -b main
+          git config user.name "port-bot"
+          git config user.email "port-bot@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ env.ORG_NAME }}/${{ inputs.service_name }}.git"
+          git add -A
+          git commit -m "Initial scaffold: ASP.NET Web API (${{ inputs.runtime_stack }})"
+          git push -u origin main
+
+      - name: Log - code pushed
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Pushed initial commit to https://github.com/${{ env.ORG_NAME }}/${{ inputs.service_name }}"
+
+      - name: Log - finished
+        if: always()
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Finished scaffolding of service, repository and Azure resources: ${{ inputs.service_name }}"
