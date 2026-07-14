@@ -425,6 +425,23 @@ jobs:
           git commit -m "Initial scaffold: ASP.NET Web API (${{ inputs.runtime_stack }})"
           git push -u origin main
 
+      # ---------------------------------------------------------------
+      # Register the service + its Azure resources in Port
+      # ---------------------------------------------------------------
+      - name: Create Service in Port with Repository Relation
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.port.io
+          operation: UPSERT
+          identifier: "${{ inputs.service_name }}_service"
+          title: "${{ inputs.service_name }} Service"
+          blueprint: "service"
+          createMissingRelatedEntities: true
+          relations: |
+            { "github_repository": "${{ inputs.service_name }}" }
+            
       - name: Log - code pushed
         uses: port-labs/port-github-action@v1
         with:
