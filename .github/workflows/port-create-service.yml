@@ -124,6 +124,16 @@ jobs:
             --location "${{ env.AZURE_LOCATION }}" \
             --tags service="${{ inputs.service_name }}"
 
+      - name: Log - resource group created
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created resource group ${{ env.RESOURCE_GROUP }} in ${{ env.AZURE_LOCATION }}"
+
       - name: Create App Service Plan + .NET Web App
         run: |
           # Publish=Code, Region=Australia East, Pricing=Free F1 (Windows) are
@@ -141,6 +151,16 @@ jobs:
             --runtime "${{ inputs.runtime_stack }}"
 
           echo "WEBAPP_URL=https://${{ env.WEBAPP_NAME }}.azurewebsites.net" >> $GITHUB_ENV
+
+      - name: Log - web app created
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created App Service Plan (F1) and Web App ${{ env.WEBAPP_NAME }} running ${{ inputs.runtime_stack }}"
 
       # ---------------------------------------------------------------
       # Optional: Storage Account
@@ -164,6 +184,17 @@ jobs:
             --name "${{ env.WEBAPP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --settings AZURE_STORAGE_CONNECTION_STRING="$STORAGE_CONN"
+
+      - name: Log - storage account created
+        if: ${{ inputs.storage_account == true }}
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created storage account ${{ env.STORAGE_NAME }} and wired its connection string into the web app"
 
       # ---------------------------------------------------------------
       # Optional: Key Vault
@@ -206,6 +237,17 @@ jobs:
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --settings KEY_VAULT_URI="https://${{ env.KV_NAME }}.vault.azure.net/"
 
+      - name: Log - key vault created
+        if: ${{ inputs.key_vault == true }}
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created key vault ${{ env.KV_NAME }} and granted the web app's managed identity Key Vault Secrets User access"
+
       # ---------------------------------------------------------------
       # Optional: Application Insights
       # ---------------------------------------------------------------
@@ -231,6 +273,17 @@ jobs:
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --settings APPLICATIONINSIGHTS_CONNECTION_STRING="$APPI_CONN"
 
+      - name: Log - application insights created
+        if: ${{ inputs.application_insight == true }}
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created Application Insights ${{ env.APPI_NAME }} and wired its connection string into the web app"
+
       # ---------------------------------------------------------------
       # Repository scaffold - real ASP.NET Web API project + .sln so it
       # opens directly in Visual Studio, no cookiecutter template.
@@ -247,6 +300,16 @@ jobs:
           gh repo create "${{ env.ORG_NAME }}/${{ inputs.service_name }}" \
             --private \
             --description "${{ inputs.description }}"
+
+      - name: Log - github repository created
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Created GitHub repository ${{ env.ORG_NAME }}/${{ inputs.service_name }}"
 
       - name: Scaffold ASP.NET Web API project
         run: |
@@ -299,6 +362,16 @@ jobs:
 
           dotnet new gitignore -o .
 
+      - name: Log - project scaffolded
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Scaffolded ASP.NET Web API project and solution file (${{ inputs.runtime_stack }})"
+
       - name: Wire Azure resource settings into appsettings.json
         run: |
           cd "scaffold/${{ inputs.service_name }}"
@@ -329,6 +402,16 @@ jobs:
           KEYVAULT_ENABLED: ${{ inputs.key_vault }}
           APPINSIGHTS_ENABLED: ${{ inputs.application_insight }}
 
+      - name: Log - appsettings wired
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Wired appsettings.json placeholders for the provisioned Azure resources"
+
       - name: Push scaffold to new repository
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
@@ -341,6 +424,16 @@ jobs:
           git add -A
           git commit -m "Initial scaffold: ASP.NET Web API (${{ inputs.runtime_stack }})"
           git push -u origin main
+
+      - name: Log - code pushed
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          baseUrl: https://api.getport.io
+          operation: PATCH_RUN
+          runId: ${{ env.PORT_RUN_ID }}
+          logMessage: "Pushed initial commit to https://github.com/${{ env.ORG_NAME }}/${{ inputs.service_name }}"
 
       - name: Log - finished
         if: always()
