@@ -254,6 +254,20 @@ jobs:
           dotnet new webapi -n "${{ inputs.service_name }}" -o "${{ inputs.service_name }}" --use-controllers true
 
           dotnet new sln -n "${{ inputs.service_name }}" -o .
+
+          # Known dotnet SDK quirk: even with -o explicitly set, "dotnet new
+          # sln -n X" can still nest the .sln under ./X/X.sln instead of
+          # honoring -o. Rather than trust the flag, locate whatever .sln
+          # actually got created and move it to the expected root path.
+          if [ ! -f "${{ inputs.service_name }}.sln" ]; then
+            FOUND_SLN=$(find . -maxdepth 2 -name "*.sln" -print -quit)
+            if [ -z "$FOUND_SLN" ]; then
+              echo "::error::dotnet new sln did not produce a .sln file anywhere under scaffold/"
+              exit 1
+            fi
+            mv "$FOUND_SLN" "./${{ inputs.service_name }}.sln"
+          fi
+
           dotnet sln "${{ inputs.service_name }}.sln" add "${{ inputs.service_name }}/${{ inputs.service_name }}.csproj"
 
           dotnet new gitignore -o .
