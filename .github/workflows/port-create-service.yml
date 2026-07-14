@@ -89,6 +89,14 @@ jobs:
             exit 1
           fi
 
+          # e.g. "dotnet:9" -> DOTNET_MAJOR=9. Used below so the SDK that
+          # scaffolds the project (setup-dotnet + global.json) always matches
+          # the runtime actually selected for the Azure Web App, instead of
+          # a version pinned separately that could silently drift apart.
+          DOTNET_MAJOR="${INPUT_STACK#dotnet:}"
+          echo "DOTNET_MAJOR=${DOTNET_MAJOR}" >> $GITHUB_ENV
+          echo "DOTNET_SDK_VERSION=${DOTNET_MAJOR}.0.x" >> $GITHUB_ENV
+
       - name: Log - starting
         uses: port-labs/port-github-action@v1
         with:
@@ -230,7 +238,7 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "${{ env.DOTNET_SDK_VERSION }}"
 
       - name: Create GitHub Repository
         env:
@@ -245,6 +253,19 @@ jobs:
           mkdir -p scaffold
           cd scaffold
 
+          # Pin the SDK explicitly - ubuntu-latest ships multiple SDKs
+          # (8/9/10) preinstalled, and without this, "dotnet" can resolve to
+          # a newer one than setup-dotnet requested, changing template output
+          # behavior (e.g. .NET 10's dotnet new sln defaulting to .slnx).
+          cat > global.json <<'EOF'
+          {
+            "sdk": {
+              "version": "${{ env.DOTNET_MAJOR }}.0.100",
+              "rollForward": "latestFeature"
+            }
+          }
+          EOF
+
           # Generates Program.cs, a WeatherForecast sample controller,
           # appsettings.json, launchSettings.json, and the .csproj - the
           # standard shape Visual Studio expects to open and run as-is.
@@ -253,7 +274,13 @@ jobs:
           # try to nest itself under ./X, colliding with the project folder.
           dotnet new webapi -n "${{ inputs.service_name }}" -o "${{ inputs.service_name }}" --use-controllers true
 
-          dotnet new sln -n "${{ inputs.service_name }}" -o .
+          # --format sln is explicit here because .NET 10's "dotnet new sln"
+          # defaults to the newer .slnx format instead of classic .sln.
+          # ubuntu-latest runners ship multiple preinstalled SDKs (8/9/10)
+          # with no global.json pinning one, so "dotnet" can silently
+          # resolve to SDK 10 here even though setup-dotnet requested 8.0.x.
+          # .sln is what's needed for broad Visual Studio/tooling compatibility.
+          dotnet new sln -n "${{ inputs.service_name }}" -o . --format sln
 
           # Known dotnet SDK quirk: even with -o explicitly set, "dotnet new
           # sln -n X" can still nest the .sln under ./X/X.sln instead of
@@ -315,22 +342,6 @@ jobs:
           git commit -m "Initial scaffold: ASP.NET Web API (${{ inputs.runtime_stack }})"
           git push -u origin main
 
-      - name: Register GitHub Repository in Port
-        uses: port-labs/port-github-action@v1
-        with:
-          clientId: ${{ secrets.PORT_CLIENT_ID }}
-          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
-          baseUrl: https://api.getport.io
-          operation: UPSERT
-          identifier: "${{ env.ORG_NAME }}/${{ inputs.service_name }}"
-          title: "${{ inputs.service_name }}"
-          blueprint: "githubRepository"
-          properties: |
-            {
-              "url": "https://github.com/${{ env.ORG_NAME }}/${{ inputs.service_name }}",
-              "runtimeStack": "${{ inputs.runtime_stack }}"
-            }
-            
       - name: Log - finished
         if: always()
         uses: port-labs/port-github-action@v1
