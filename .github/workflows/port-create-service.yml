@@ -80,7 +80,7 @@ jobs:
           # NODE, JAVA, and TOMCAT are also valid on Windows but excluded
           # here to keep this form Core-only. Keep in sync with the Port
           # form's runtime_stack dropdown options.
-          ALLOWED_STACKS="dotnet:8 dotnet:9 dotnet:10"
+          ALLOWED_STACKS="DOTNETCORE:8.0 DOTNETCORE:9.0 DOTNETCORE:10.0"
           INPUT_STACK="${{ inputs.runtime_stack }}"
 
           if [[ ! " $ALLOWED_STACKS " =~ " $INPUT_STACK " ]]; then
