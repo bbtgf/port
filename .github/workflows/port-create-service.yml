@@ -74,28 +74,28 @@ jobs:
 
       - name: Validate runtime stack
         run: |
-          # Confirmed via 'az webapp list-runtimes --os-type windows':
-          # valid Windows stack strings are lowercase "dotnet:X" (colon, no
-          # pipe, no "CORE" suffix). ASPNET:V4.8/V3.5 (classic Framework),
-          # NODE, JAVA, and TOMCAT are also valid on Windows but excluded
-          # here to keep this form Core-only. Keep in sync with the Port
-          # form's runtime_stack dropdown options.
-          ALLOWED_STACKS="DOTNETCORE:8.0 DOTNETCORE:9.0 DOTNETCORE:10.0"
           INPUT_STACK="${{ inputs.runtime_stack }}"
-
-          if [[ ! " $ALLOWED_STACKS " =~ " $INPUT_STACK " ]]; then
-            echo "::error::Unsupported runtime_stack '$INPUT_STACK'. Allowed values for this Windows App Service plan: $ALLOWED_STACKS"
-            echo "Run 'az webapp list-runtimes --os-type windows' to see the full current list if this needs to change, then update both this allow-list and the Port form's dropdown options to match."
-            exit 1
-          fi
-
-          # e.g. "dotnet:9" -> DOTNET_MAJOR=9. Used below so the SDK that
-          # scaffolds the project (setup-dotnet + global.json) always matches
-          # the runtime actually selected for the Azure Web App, instead of
-          # a version pinned separately that could silently drift apart.
-          DOTNET_MAJOR="${INPUT_STACK#dotnet:}"
-          echo "DOTNET_MAJOR=${DOTNET_MAJOR}" >> $GITHUB_ENV
-          echo "DOTNET_SDK_VERSION=${DOTNET_MAJOR}.0.x" >> $GITHUB_ENV
+      
+          case "$INPUT_STACK" in
+            "DOTNETCORE:8.0")
+              echo "DOTNET_MAJOR=8" >> $GITHUB_ENV
+              echo "DOTNET_SDK_VERSION=8.0.x" >> $GITHUB_ENV
+              ;;
+            "DOTNETCORE:9.0")
+              echo "DOTNET_MAJOR=9" >> $GITHUB_ENV
+              echo "DOTNET_SDK_VERSION=9.0.x" >> $GITHUB_ENV
+              ;;
+            "DOTNETCORE:10.0")
+              echo "DOTNET_MAJOR=10" >> $GITHUB_ENV
+              echo "DOTNET_SDK_VERSION=10.0.x" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "::error::Unsupported runtime stack '$INPUT_STACK'"
+              exit 1
+              ;;
+          esac
+          
+          echo "Selected runtime stack: $INPUT_STACK"
 
       - name: Log - starting
         uses: port-labs/port-github-action@v1
